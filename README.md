@@ -1,15 +1,6 @@
 ## Research
 # A Hybrid LLM-AHP Decision Making Framework for Wind Farm Site Selection and Criteria Evaluation
 
-## Quick start
-
-1. Create python env and install deps:
-
-python -m venv venv
-venv\Scripts\activate 
-pip install -r requirements.txt
-
-
 # Prompt for criteria matrices
 Construct a 6x6 matrix using the 1–9 scale to evaluate offshore renewable energy sites. Ensure that the matrix reflects meaningful and realistic differences in importance among the following six high-level criteria, based on domain-specific considerations. Use a wide range of values from the full scale (1–9) and their reciprocals to show clear contrasts in priority where justified. Force use all 1-9 scale. Use the following mentioned criteria 
 * C1: Wind Resource Quality
@@ -29,3 +20,8 @@ Instructions for the matrix generation:
 * Use the scale (1–9 + 1/2 … 1/9) with diverse, realistic values (avoid clustering around 1) 
 * Each matrix should reflect site differences under its criterion. 
 Output: A 10x10 symmetric matrix showing pairwise comparisons with appropriate values and reciprocals
+
+
+# How to run
+Run the command below in terminal
+python -m streamlit run app.py
