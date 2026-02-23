@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import io
+import plotly.express as px
 from llm_engine import LLMHandler, LLM_CRITERIA, SITES
 from ahp_core import calculate_ahp, apply_scale_compression, parse_manual_matrix
 from visualization import plot_ci_trends, plot_importance_counts, plot_weights_for_sites
@@ -11,20 +12,37 @@ st.set_page_config(page_title="Transparent AHP-LLM Framework", layout="wide")
 st.title("Hybrid LLM-AHP Wind Farm Site Selection")
 st.markdown("Automated generation, manual input, transparent calculations, and downloadable reports.")
 
+# Sidebar Configuration
 st.sidebar.header("Configuration")
 data_source = st.sidebar.radio("Data Source", ["LLM Simulation (Mock Data)", "LLM API (Real)", "Manual Input (User Paste)"])
 
+# Dynamic Round Configuration
 if "LLM" in data_source:
     run_rounds = st.sidebar.slider("Number of Rounds", 1, 10, 10)
     default_llms = ["ChatGPT"]
 else:
-    run_rounds = 1 
-    
+    # Ask user for number of inputs in Manual Mode
+    run_rounds = st.sidebar.number_input("Number of Manual Rounds (Inputs)", min_value=1, value=1, step=1)
     default_llms = ["ChatGPT"]
 
 selected_llms = st.sidebar.multiselect("Select LLMs (for Criteria Definitions)", list(LLM_CRITERIA.keys()), default=default_llms)
 
 handler = LLMHandler()
+
+# GPS Coordinates for the 10 Alberta Sites
+SITE_COORDS = {
+    "Canmore": {"lat": 51.0899, "lon": -115.3441},
+    "Lethbridge": {"lat": 49.6956, "lon": -112.8396},
+    "Hanna": {"lat": 51.6389, "lon": -111.9304},
+    "Fort McMurray": {"lat": 56.7265, "lon": -111.3803},
+    "Medicine Hat": {"lat": 50.0416, "lon": -110.6775},
+    "Cold Lake": {"lat": 54.4642, "lon": -110.1825},
+    "Drumheller": {"lat": 51.4650, "lon": -112.7106},
+    "Grande Prairie": {"lat": 55.1708, "lon": -118.7947},
+    "Fort Chipewyan": {"lat": 58.7145, "lon": -111.1528},
+    "High Level": {"lat": 58.5165, "lon": -117.1365}
+}
+
 
 def display_matrix_process(matrix, title, round_num):
     """
@@ -86,35 +104,43 @@ with tab1:
         if not selected_llms:
             st.warning("Please select at least one LLM in the sidebar.")
         else:
-            st.write("Enter matrices for each selected LLM below:")
+            st.write(f"Enter **{run_rounds}** matrices for each selected LLM below:")
             
             for llm in selected_llms:
-                with st.expander(f"📝 Input for: {llm}", expanded=True):
+                with st.expander(f" Input for: {llm}", expanded=True):
                
-                    default_text = "1 2 3 4 5 6\n0.5 1 2 3 4 5\n0.33 0.5 1 2 3 4\n0.25 0.33 0.5 1 2 3\n0.2 0.25 0.33 0.5 1 2\n0.16 0.2 0.25 0.33 0.5 1"
-                    
-                    key_name = f"manual_crit_text_{llm}"
-                    if key_name not in st.session_state.manual_inputs:
-                        st.session_state.manual_inputs[key_name] = default_text
+                    for r in range(run_rounds):
+                        st.markdown(f"**Round {r+1}**")
+                        default_text = "1 2 3 4 5 6\n0.5 1 2 3 4 5\n0.33 0.5 1 2 3 4\n0.25 0.33 0.5 1 2 3\n0.2 0.25 0.33 0.5 1 2\n0.16 0.2 0.25 0.33 0.5 1"
                         
-                    manual_text = st.text_area(f"6x6 Matrix for {llm}", key=key_name, height=150)
+                        key_name = f"manual_crit_text_{llm}_r{r}"
+                        if key_name not in st.session_state.manual_inputs:
+                            st.session_state.manual_inputs[key_name] = default_text
+                            
+                        st.session_state.manual_inputs[key_name] = st.text_area(f"Matrix (Round {r+1})", key=f"ta_{key_name}", value=st.session_state.manual_inputs[key_name], height=150)
             
             if st.button("Calculate Manual Criteria"):
                 for llm in selected_llms:
+                    # Initialize result storage for this LLM
+                    st.session_state.criteria_results[llm] = {'cis': [], 'weights': [], 'most': [], 'least': []}
+                    
                     try:
-                        txt = st.session_state.manual_inputs.get(f"manual_crit_text_{llm}", "")
-                        mat = parse_manual_matrix(txt, 6)
-                        
                         st.markdown(f"### Results for {llm}")
-                        w, ci, cr = display_matrix_process(mat, f"Manual_{llm}", 1)
-                        
-                        st.session_state.criteria_results[llm] = {
-                            'cis': [ci], 'weights': [w], 'most': [], 'least': []
-                        }
+                        for r in range(run_rounds):
+                            key_name = f"manual_crit_text_{llm}_r{r}"
+                            txt = st.session_state.manual_inputs.get(key_name, "")
+                            mat = parse_manual_matrix(txt, 6)
+                            
+                            w, ci, cr = display_matrix_process(mat, f"Manual_{llm}", r+1)
+                            
+                            # Store results
+                            st.session_state.criteria_results[llm]['cis'].append(ci)
+                            st.session_state.criteria_results[llm]['weights'].append(w)
+                            
                     except Exception as e:
-                        st.error(f"Error in {llm}: {e}")
+                        st.error(f"Error in {llm} (Round {r+1}): {e}")
 
-    # LLM 
+    # LLM GENERATION LOGIC
     else: 
         if st.button("Run LLM Criteria Analysis"):
             for llm in selected_llms:
@@ -143,13 +169,15 @@ with tab1:
         valid_llms = [llm for llm in selected_llms if llm in st.session_state.criteria_results]
         
         if valid_llms:
+            # Handle plotting for variable number of rounds
             ci_data = {llm: st.session_state.criteria_results[llm]['cis'] for llm in valid_llms}
             fig_ci = plot_ci_trends(ci_data)
             st.pyplot(fig_ci)
             
             buf = io.BytesIO()
             fig_ci.savefig(buf, format="png")
-            st.download_button("⬇️ Download CI Graph (PNG)", buf.getvalue(), "ci_trends.png", "image/png")
+            st.download_button("Download CI Graph (PNG)", buf.getvalue(), "ci_trends.png", "image/png")
+
 
 with tab2:
     st.header("Step 2: Site Alternatives (10x10 Matrices)")
@@ -160,47 +188,63 @@ with tab2:
         target_llm_site = st.selectbox("Select LLM Framework to Analyze:", selected_llms)
         criteria_list = LLM_CRITERIA[target_llm_site]
         
+        # Ensure storage exists
         if target_llm_site not in st.session_state.site_results:
             st.session_state.site_results[target_llm_site] = {}
 
         # MANUAL INPUT LOGIC
         if data_source == "Manual Input (User Paste)":
             st.info(f"Inputting 10x10 Matrices for: **{target_llm_site}**")
+            st.write("Select a criterion, enter data for all rounds, then click Process.")
             
             selected_crit = st.selectbox("Select Criterion for Input:", criteria_list)
             
-            input_key = f"manual_site_{target_llm_site}_{selected_crit}"
-            if input_key not in st.session_state.manual_inputs:
-                st.session_state.manual_inputs[input_key] = ""
+            # Generate input boxes for the number of rounds requested
+            with st.form(key=f"form_{target_llm_site}_{selected_crit}"):
+                for r in range(run_rounds):
+                    st.markdown(f"**Round {r+1}**")
+                    input_key = f"manual_site_{target_llm_site}_{selected_crit}_r{r}"
+                    
+                    if input_key not in st.session_state.manual_inputs:
+                        st.session_state.manual_inputs[input_key] = ""
+                        
+                    st.session_state.manual_inputs[input_key] = st.text_area(
+                        f"Paste Matrix (Round {r+1})", 
+                        value=st.session_state.manual_inputs[input_key],
+                        height=150,
+                        key=f"textarea_{input_key}" 
+                    )
                 
-            st.session_state.manual_inputs[input_key] = st.text_area(
-                f"Paste 10x10 Matrix for '{selected_crit}'", 
-                value=st.session_state.manual_inputs[input_key],
-                height=200,
-                key=f"textarea_{input_key}" 
-            )
+                submit_button = st.form_submit_button(label=f"Process Rounds for '{selected_crit}'")
             
-            if st.button(f"Process Manual Data for {target_llm_site}"):
-            
-                current_results = {c: {'weights': [], 'cis': []} for c in criteria_list}
+            if submit_button:
+                # Initialize specific list for this criterion
+                if selected_crit not in st.session_state.site_results[target_llm_site]:
+                     st.session_state.site_results[target_llm_site][selected_crit] = {'weights': [], 'cis': []}
                 
+                # Reset lists to avoid appending duplicates if button pressed twice
+                current_weights = []
+                current_cis = []
+
                 try:
-                    for c in criteria_list:
-                        key = f"manual_site_{target_llm_site}_{c}"
+                    st.markdown(f"### Processing {selected_crit}")
+                    for r in range(run_rounds):
+                        key = f"manual_site_{target_llm_site}_{selected_crit}_r{r}"
                         txt = st.session_state.manual_inputs.get(key, "")
                         
                         if not txt.strip():
-                            st.warning(f"Skipping empty matrix for criterion: {c}")
+                            st.warning(f"Skipping empty matrix for Round {r+1}")
                             continue
                             
                         mat = parse_manual_matrix(txt, 10)
-                        w, ci, cr = display_matrix_process(mat, f"{target_llm_site}_{c[:5]}", 1)
-                        current_results[c]['weights'].append(w)
-                        current_results[c]['cis'].append(ci)
+                        w, ci, cr = display_matrix_process(mat, f"{target_llm_site}_{selected_crit[:5]}", r+1)
+                        current_weights.append(w)
+                        current_cis.append(ci)
                     
-                    
-                    st.session_state.site_results[target_llm_site] = current_results
-                    st.success(f"Saved manual site data for {target_llm_site}!")
+                    # Update Session State
+                    st.session_state.site_results[target_llm_site][selected_crit]['weights'] = current_weights
+                    st.session_state.site_results[target_llm_site][selected_crit]['cis'] = current_cis
+                    st.success(f"Saved {len(current_weights)} rounds for {selected_crit}!")
                     
                 except Exception as e:
                     st.error(f"Error parsing manual input: {e}")
@@ -208,7 +252,6 @@ with tab2:
         # LLM GENERATION LOGIC
         else:
             if st.button(f"Run Site Analysis for {target_llm_site}"):
-            
                 current_results = {c: {'weights': [], 'cis': []} for c in criteria_list}
                 
                 progress_bar = st.progress(0)
@@ -223,7 +266,6 @@ with tab2:
                         resp = handler.get_response(target_llm_site, prompt, simulate=("Simulation" in data_source))
                         mat = np.array(resp['matrix'])
                         
-                       
                         w, ci, cr = display_matrix_process(mat, f"Site_{c[:10]}", r+1)
                         
                         current_results[c]['weights'].append(w)
@@ -234,12 +276,13 @@ with tab2:
                 
                 st.session_state.site_results[target_llm_site] = current_results
 
-        
+        # VISUALIZATION
         if target_llm_site in st.session_state.site_results and st.session_state.site_results[target_llm_site]:
             st.markdown("---")
             st.subheader(f"Results for {target_llm_site}")
             
             res_data = st.session_state.site_results[target_llm_site]
+            # Filter criteria that actually have data
             valid_criteria = [k for k in res_data.keys() if res_data[k]['weights']]
             
             if valid_criteria:
@@ -252,16 +295,17 @@ with tab2:
                     
                     buf2 = io.BytesIO()
                     fig_site.savefig(buf2, format="png")
-                    st.download_button(f"⬇️ Download Graph", buf2.getvalue(), f"site_weights_{target_llm_site}_{c_view[:5]}.png", "image/png")
+                    st.download_button(f"Download Graph", buf2.getvalue(), f"site_weights_{target_llm_site}_{c_view[:5]}.png", "image/png")
 
 
 with tab3:
-    st.header("Step 3: Global Aggregation")
+    st.header("Step 3: Global Aggregation & Spatial Heatmap")
     
     has_crit = bool(st.session_state.criteria_results)
     has_site = bool(st.session_state.site_results)
     
     if has_crit and has_site:
+        # Find LLMs that have data in both steps
         available_llms = [llm for llm in selected_llms if llm in st.session_state.criteria_results and llm in st.session_state.site_results]
         
         if not available_llms:
@@ -275,17 +319,20 @@ with tab3:
             if not c_res['weights']:
                 st.error("Missing weights for criteria.")
             else:
+                # 1. Averaged Criteria Weights
                 W_c = np.mean(c_res['weights'], axis=0)
                 
                 st.subheader("A. Averaged Criteria Weights")
                 df_cw = pd.DataFrame({"Criterion": LLM_CRITERIA[target_llm], "Weight": W_c})
                 st.dataframe(df_cw.style.format({"Weight": "{:.4f}"}))
                 
+                # 2. Averaged Site Weights
                 st.subheader("B. Averaged Site Weights (Matrix)")
                 
                 W_s = np.zeros((10, 6))
                 valid_cols = []
                 
+                # Fill W_s matrix
                 for i, c_name in enumerate(LLM_CRITERIA[target_llm]):
                     if c_name in s_res and s_res[c_name]['weights']:
                         W_s[:, i] = np.mean(s_res[c_name]['weights'], axis=0)
@@ -296,6 +343,104 @@ with tab3:
                 df_sw = pd.DataFrame(W_s, columns=[f"C{i+1}" for i in range(6)], index=[s.split(":")[0] for s in SITES])
                 st.dataframe(df_sw.style.format("{:.4f}"))
 
+                # 3. Global Synthesis
+                global_scores = np.dot(W_s, W_c)
+                
+                st.subheader("C. Final Site Rankings")
+                
+                # Build final dataframe with coordinates
+                locations = [s.split(":")[1].strip() for s in SITES]
+                lats = [SITE_COORDS[loc]["lat"] for loc in locations]
+                lons = [SITE_COORDS[loc]["lon"] for loc in locations]
+                
+                df_final = pd.DataFrame({
+                    "Site Code": [s.split(":")[0] for s in SITES],
+                    "Location": locations,
+                    "Final Score": global_scores,
+                    "Latitude": lats,
+                    "Longitude": lons
+                }).sort_values(by="Final Score", ascending=False)
+                
+                # Display table without the lat/lon cluttering it up
+                st.dataframe(df_final[["Site Code", "Location", "Final Score"]].style.format({"Final Score": "{:.4f}"}))
+                
+                # --- NEW MAPPING SECTION ---
+                st.subheader("📍 Geographical Site Scoring (Heatmap)")
+                
+                # Create interactive map
+                fig_map = px.scatter_mapbox(
+                    df_final, 
+                    lat="Latitude", 
+                    lon="Longitude", 
+                    hover_name="Location", 
+                    hover_data={"Final Score": ':.4f', "Latitude": False, "Longitude": False},
+                    color="Final Score",
+                    size="Final Score",
+                    color_continuous_scale=px.colors.sequential.YlOrRd, # Yellow to Red heatmap colors
+                    size_max=25,
+                    zoom=4.5, 
+                    center={"lat": 54.5, "lon": -115.0}, # Centered roughly on Alberta
+                    mapbox_style="carto-positron",
+                    title=f"Optimal Wind Farm Locations based on {target_llm} AHP Framework"
+                )
+                
+                fig_map.update_layout(margin={"r":0,"t":40,"l":0,"b":0})
+                st.plotly_chart(fig_map, use_container_width=True)
+                # ---------------------------
+                
+                # Download Final Report
+                csv_final = df_final.to_csv(index=False).encode('utf-8')
+                st.download_button("⬇️ Download Final Rankings (CSV)", csv_final, f"final_rankings_{target_llm}.csv", "text/csv")
+                
+                best = df_final.iloc[0]
+                st.success(f"🏆 Optimal Site ({target_llm}): **{best['Location']}** (Score: {best['Final Score']:.4f})")
+    else:
+        st.warning("Please complete Steps 1 and 2 to see final rankings.")
+    st.header("Step 3: Global Aggregation")
+    
+    has_crit = bool(st.session_state.criteria_results)
+    has_site = bool(st.session_state.site_results)
+    
+    if has_crit and has_site:
+        # Find LLMs that have data in both steps
+        available_llms = [llm for llm in selected_llms if llm in st.session_state.criteria_results and llm in st.session_state.site_results]
+        
+        if not available_llms:
+            st.warning("Data incomplete. Please ensure you have run BOTH Criteria and Site analysis for the same LLM.")
+        else:
+            target_llm = st.selectbox("Select LLM for Final Report:", available_llms)
+            
+            c_res = st.session_state.criteria_results[target_llm]
+            s_res = st.session_state.site_results[target_llm]
+            
+            if not c_res['weights']:
+                st.error("Missing weights for criteria.")
+            else:
+                # 1. Averaged Criteria Weights
+                W_c = np.mean(c_res['weights'], axis=0)
+                
+                st.subheader("A. Averaged Criteria Weights")
+                df_cw = pd.DataFrame({"Criterion": LLM_CRITERIA[target_llm], "Weight": W_c})
+                st.dataframe(df_cw.style.format({"Weight": "{:.4f}"}))
+                
+                # 2. Averaged Site Weights
+                st.subheader("B. Averaged Site Weights (Matrix)")
+                
+                W_s = np.zeros((10, 6))
+                valid_cols = []
+                
+                # Fill W_s matrix
+                for i, c_name in enumerate(LLM_CRITERIA[target_llm]):
+                    if c_name in s_res and s_res[c_name]['weights']:
+                        W_s[:, i] = np.mean(s_res[c_name]['weights'], axis=0)
+                        valid_cols.append(c_name)
+                    else:
+                        st.warning(f"No site data found for criterion: {c_name}. Treating as zeros.")
+                
+                df_sw = pd.DataFrame(W_s, columns=[f"C{i+1}" for i in range(6)], index=[s.split(":")[0] for s in SITES])
+                st.dataframe(df_sw.style.format("{:.4f}"))
+
+                # 3. Global Synthesis
                 global_scores = np.dot(W_s, W_c)
                 
                 st.subheader("C. Final Site Rankings")
@@ -309,9 +454,9 @@ with tab3:
                 
                 # Download Final Report
                 csv_final = df_final.to_csv(index=False).encode('utf-8')
-                st.download_button("⬇️ Download Final Rankings (CSV)", csv_final, f"final_rankings_{target_llm}.csv", "text/csv")
+                st.download_button("Download Final Rankings (CSV)", csv_final, f"final_rankings_{target_llm}.csv", "text/csv")
                 
                 best = df_final.iloc[0]
-                st.success(f"🏆 Optimal Site ({target_llm}): **{best['Location']}** (Score: {best['Final Score']:.4f})")
+                st.success(f"Optimal Site ({target_llm}): **{best['Location']}** (Score: {best['Final Score']:.4f})")
     else:
         st.warning("Please complete Steps 1 and 2 to see final rankings.")

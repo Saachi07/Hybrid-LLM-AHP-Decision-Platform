@@ -8,7 +8,7 @@ Construct a 6x6 matrix using the 1–9 scale to evaluate offshore renewable ener
 * C3: Land Availability and Terrain
 * C4: Environmental and Ecological Impact
 * C5: Community and Land Use Considerations
-* C5: Economic Viability
+* C6: Economic Viability
 
 
 # Prompt for site matrices
