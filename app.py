@@ -10,7 +10,6 @@ from visualization import plot_ci_trends, plot_importance_counts, plot_weights_f
 st.set_page_config(page_title="Transparent AHP-LLM Framework", layout="wide")
 
 st.title("Hybrid LLM-AHP Wind Farm Site Selection")
-st.markdown("Automated generation, manual input, transparent calculations, and downloadable reports.")
 
 # Sidebar Configuration
 st.sidebar.header("Configuration")

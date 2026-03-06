@@ -67,25 +67,45 @@ class LLMHandler:
             return self._simulate_response(llm_name, prompt)
 
     def _simulate_response(self, llm_name, prompt):
-        """Generates dummy data for testing."""
+
         is_site_matrix = "10x10" in prompt
         n = 10 if is_site_matrix else 6
-        
-        # Random consistent matrix simulation
-        vec = np.random.rand(n)
-        vec = vec / np.sum(vec)
-        matrix = np.zeros((n, n))
+
+        true_weights = np.random.rand(n)
+        true_weights /= np.sum(true_weights)
+    
+        # Define the valid Saaty scale values
+        saaty_values = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    
+        matrix = np.ones((n, n))
         for i in range(n):
             for j in range(n):
-                if i == j: matrix[i, j] = 1
-                else: 
-                    ratio = vec[i] / vec[j]
-                    noise = random.uniform(0.5, 1.5) # Add noise to trigger inconsistency checks
-                    matrix[i, j] = ratio * noise
-        
+                if i == j:
+                    matrix[i, j] = 1.0
+                elif i < j:
+                    # Calculate the exact ratio
+                    ratio = true_weights[i] / true_weights[j]
+                
+                    # Add controlled noise 
+                    noise = np.random.uniform(0.85, 1.15)
+                    noisy_ratio = ratio * noise
+                
+                    # Map to the nearest Saaty scale value or its reciprocal
+                    if noisy_ratio >= 1:
+                        val = min(saaty_values, key=lambda x: abs(x - noisy_ratio))
+                        matrix[i, j] = float(val)
+                    else:
+                        inv_ratio = 1.0 / noisy_ratio
+                        val = min(saaty_values, key=lambda x: abs(x - inv_ratio))
+                        matrix[i, j] = 1.0 / float(val)
+                    
+                    matrix[j, i] = 1.0 / matrix[i, j]
+
         criteria = LLM_CRITERIA.get(llm_name, [])
-        most_imp = criteria[np.argmax(vec)] if not is_site_matrix else ""
-        least_imp = criteria[np.argmin(vec)] if not is_site_matrix else ""
+
+        row_sums = np.sum(matrix, axis=1)
+        most_imp = criteria[np.argmax(row_sums)] if not is_site_matrix and criteria else ""
+        least_imp = criteria[np.argmin(row_sums)] if not is_site_matrix and criteria else ""
 
         return {
             "most_important": most_imp,
