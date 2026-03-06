@@ -7,7 +7,7 @@ def plot_ci_trends(results_dict, title="Consistency Index (CI) over 10 Rounds"):
     markers = ['o', 's', '^', 'D', 'x', '*']
     for i, (llm, values) in enumerate(results_dict.items()):
         marker = markers[i % len(markers)]
-        ax.plot(range(1, 11), values, marker=marker, label=llm, linewidth=2)
+        ax.plot(range(1, len(values) + 1), values, marker=marker, label=llm, linewidth=2)
     ax.set_title(title, fontsize=14)
     ax.set_xlabel("Rounds")
     ax.set_ylabel("CI Value")

@@ -4,7 +4,7 @@ import pandas as pd
 import io
 import plotly.express as px
 from llm_engine import LLMHandler, LLM_CRITERIA, SITES
-from ahp_core import calculate_ahp, apply_scale_compression, parse_manual_matrix
+from ahp_core import calculate_ahp, apply_scale_compression, parse_manual_matrix, parse_file_to_matrix
 from visualization import plot_ci_trends, plot_importance_counts, plot_weights_for_sites
 
 st.set_page_config(page_title="Transparent AHP-LLM Framework", layout="wide")
@@ -14,7 +14,7 @@ st.markdown("Automated generation, manual input, transparent calculations, and d
 
 # Sidebar Configuration
 st.sidebar.header("Configuration")
-data_source = st.sidebar.radio("Data Source", ["LLM Simulation (Mock Data)", "LLM API (Real)", "Manual Input (User Paste)"])
+data_source = st.sidebar.radio("Data Source", ["LLM Simulation (Mock Data)", "LLM API (Real)", "Manual Input (User Paste)", "File Upload (Excel/Word)"])
 
 # Dynamic Round Configuration
 if "LLM" in data_source:
@@ -178,6 +178,27 @@ with tab1:
             fig_ci.savefig(buf, format="png")
             st.download_button("Download CI Graph (PNG)", buf.getvalue(), "ci_trends.png", "image/png")
 
+    # File upload
+    elif data_source == "File Upload (Excel/Word)":
+        if not selected_llms:
+            st.warning("Please select at least one LLM in the sidebar.")
+        else:
+            st.write(f"Upload **{run_rounds}** files for each selected LLM:")
+            for llm in selected_llms:
+                with st.expander(f"Upload for: {llm}", expanded=True):
+                    uploaded_files = st.file_uploader(f"Choose files for {llm}", type=['xlsx', 'docx', 'csv'], accept_multiple_files=True, key=f"file_crit_{llm}")
+                    
+                    if st.button(f"Process Files for {llm}"):
+                        if len(uploaded_files) != run_rounds:
+                            st.error(f"Please upload exactly {run_rounds} files.")
+                        else:
+                            st.session_state.criteria_results[llm] = {'cis': [], 'weights': [], 'most': [], 'least': []}
+                            for i, file in enumerate(uploaded_files):
+                                # Use the parsing function from ahp_core.py
+                                mat = parse_file_to_matrix(file, 6) 
+                                w, ci, cr = display_matrix_process(mat, f"File_{llm}", i+1)
+                                st.session_state.criteria_results[llm]['cis'].append(ci)
+                                st.session_state.criteria_results[llm]['weights'].append(w)
 
 with tab2:
     st.header("Step 2: Site Alternatives (10x10 Matrices)")
@@ -296,7 +317,32 @@ with tab2:
                     buf2 = io.BytesIO()
                     fig_site.savefig(buf2, format="png")
                     st.download_button(f"Download Graph", buf2.getvalue(), f"site_weights_{target_llm_site}_{c_view[:5]}.png", "image/png")
-
+        
+    # NEW FILE UPLOAD LOGIC
+    if data_source == "File Upload (Excel/Word)":
+        st.info(f"Uploading 10x10 Matrices for: **{target_llm_site}**")
+        selected_crit = st.selectbox("Select Criterion for Upload:", criteria_list)
+        
+        uploaded_site_files = st.file_uploader(f"Upload {run_rounds} files for {selected_crit}", type=['xlsx', 'docx', 'csv'], accept_multiple_files=True)
+        
+        if st.button(f"Process Site Files for {selected_crit}"):
+            if len(uploaded_site_files) != run_rounds:
+                st.error(f"Please upload exactly {run_rounds} files.")
+            else:
+                if selected_crit not in st.session_state.site_results[target_llm_site]:
+                    st.session_state.site_results[target_llm_site][selected_crit] = {'weights': [], 'cis': []}
+                
+                current_weights = []
+                current_cis = []
+                for i, file in enumerate(uploaded_site_files):
+                    mat = parse_file_to_matrix(file, 10) # 10x10 for sites
+                    w, ci, cr = display_matrix_process(mat, f"File_{selected_crit[:5]}", i+1)
+                    current_weights.append(w)
+                    current_cis.append(ci)
+                
+                st.session_state.site_results[target_llm_site][selected_crit]['weights'] = current_weights
+                st.session_state.site_results[target_llm_site][selected_crit]['cis'] = current_cis
+                st.success(f"Processed {len(current_weights)} files for {selected_crit}!")
 
 with tab3:
     st.header("Step 3: Global Aggregation & Spatial Heatmap")
@@ -365,7 +411,7 @@ with tab3:
                 st.dataframe(df_final[["Site Code", "Location", "Final Score"]].style.format({"Final Score": "{:.4f}"}))
                 
                 # --- NEW MAPPING SECTION ---
-                st.subheader("📍 Geographical Site Scoring (Heatmap)")
+                st.subheader(" Geographical Site Scoring ")
                 
                 # Create interactive map
                 fig_map = px.scatter_mapbox(
@@ -393,70 +439,7 @@ with tab3:
                 st.download_button("⬇️ Download Final Rankings (CSV)", csv_final, f"final_rankings_{target_llm}.csv", "text/csv")
                 
                 best = df_final.iloc[0]
-                st.success(f"🏆 Optimal Site ({target_llm}): **{best['Location']}** (Score: {best['Final Score']:.4f})")
-    else:
-        st.warning("Please complete Steps 1 and 2 to see final rankings.")
-    st.header("Step 3: Global Aggregation")
-    
-    has_crit = bool(st.session_state.criteria_results)
-    has_site = bool(st.session_state.site_results)
-    
-    if has_crit and has_site:
-        # Find LLMs that have data in both steps
-        available_llms = [llm for llm in selected_llms if llm in st.session_state.criteria_results and llm in st.session_state.site_results]
-        
-        if not available_llms:
-            st.warning("Data incomplete. Please ensure you have run BOTH Criteria and Site analysis for the same LLM.")
-        else:
-            target_llm = st.selectbox("Select LLM for Final Report:", available_llms)
-            
-            c_res = st.session_state.criteria_results[target_llm]
-            s_res = st.session_state.site_results[target_llm]
-            
-            if not c_res['weights']:
-                st.error("Missing weights for criteria.")
-            else:
-                # 1. Averaged Criteria Weights
-                W_c = np.mean(c_res['weights'], axis=0)
-                
-                st.subheader("A. Averaged Criteria Weights")
-                df_cw = pd.DataFrame({"Criterion": LLM_CRITERIA[target_llm], "Weight": W_c})
-                st.dataframe(df_cw.style.format({"Weight": "{:.4f}"}))
-                
-                # 2. Averaged Site Weights
-                st.subheader("B. Averaged Site Weights (Matrix)")
-                
-                W_s = np.zeros((10, 6))
-                valid_cols = []
-                
-                # Fill W_s matrix
-                for i, c_name in enumerate(LLM_CRITERIA[target_llm]):
-                    if c_name in s_res and s_res[c_name]['weights']:
-                        W_s[:, i] = np.mean(s_res[c_name]['weights'], axis=0)
-                        valid_cols.append(c_name)
-                    else:
-                        st.warning(f"No site data found for criterion: {c_name}. Treating as zeros.")
-                
-                df_sw = pd.DataFrame(W_s, columns=[f"C{i+1}" for i in range(6)], index=[s.split(":")[0] for s in SITES])
-                st.dataframe(df_sw.style.format("{:.4f}"))
-
-                # 3. Global Synthesis
-                global_scores = np.dot(W_s, W_c)
-                
-                st.subheader("C. Final Site Rankings")
-                df_final = pd.DataFrame({
-                    "Site Code": [s.split(":")[0] for s in SITES],
-                    "Location": [s.split(":")[1].strip() for s in SITES],
-                    "Final Score": global_scores
-                }).sort_values(by="Final Score", ascending=False)
-                
-                st.dataframe(df_final.style.format({"Final Score": "{:.4f}"}))
-                
-                # Download Final Report
-                csv_final = df_final.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Final Rankings (CSV)", csv_final, f"final_rankings_{target_llm}.csv", "text/csv")
-                
-                best = df_final.iloc[0]
                 st.success(f"Optimal Site ({target_llm}): **{best['Location']}** (Score: {best['Final Score']:.4f})")
     else:
         st.warning("Please complete Steps 1 and 2 to see final rankings.")
+    

@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from fractions import Fraction
+from docx import Document
+import io
 
 # Saaty's Random Index (RI)
 RI_DICT = {1: 0.00, 2: 0.00, 3: 0.58, 4: 0.90, 5: 1.12, 6: 1.24, 7: 1.32, 8: 1.41, 9: 1.45, 10: 1.49}
@@ -96,3 +98,29 @@ def parse_manual_matrix(text_input, size):
         matrix.append(parsed_row)
     
     return np.array(matrix)
+
+def parse_file_to_matrix(uploaded_file, expected_size):
+    """Parses Excel, CSV, or Word files into a numpy matrix."""
+    file_type = uploaded_file.name.split('.')[-1]
+    
+    if file_type == 'csv':
+        df = pd.read_csv(uploaded_file, header=None)
+    elif file_type in ['xls', 'xlsx']:
+        df = pd.read_excel(uploaded_file, header=None)
+    elif file_type == 'docx':
+        # Extract table from Word document
+        doc = Document(uploaded_file)
+        data = []
+        for table in doc.tables:
+            for row in table.rows:
+                data.append([cell.text for cell in row.cells])
+        df = pd.DataFrame(data)
+    else:
+        raise ValueError("Unsupported file format.")
+
+    # Convert to numeric, handle fractions, and check dimensions
+    matrix = df.applymap(parse_fraction).values
+    if matrix.shape != (expected_size, expected_size):
+        raise ValueError(f"Expected {expected_size}x{expected_size}, got {matrix.shape[0]}x{matrix.shape[1]}")
+    
+    return matrix
